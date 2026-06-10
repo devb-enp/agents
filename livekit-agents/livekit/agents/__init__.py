@@ -27,6 +27,7 @@ from ._exceptions import (
     APIStatusError,
     APITimeoutError,
     AssignmentTimeoutError,
+    create_api_error_from_http,
 )
 from .job import (
     AutoSubscribe,
@@ -36,7 +37,10 @@ from .job import (
     JobRequest,
     get_job_context,
 )
+from .language import LanguageCode
 from .llm.chat_context import (
+    AgentConfigUpdate,
+    AgentHandoff,
     ChatContent,
     ChatContext,
     ChatItem,
@@ -45,12 +49,29 @@ from .llm.chat_context import (
     FunctionCall,
     FunctionCallOutput,
 )
-from .llm.tool_context import FunctionTool, StopResponse, ToolError, function_tool
+from .llm.tool_context import (
+    FunctionTool,
+    ProviderTool,
+    StopResponse,
+    ToolContext,
+    ToolError,
+    function_tool,
+)
 from .plugin import Plugin
+from .simulation import (
+    Scenario,
+    ScenarioGroup,
+    ScenarioUserdata,
+    SimulationContext,
+    SimulationDispatch,
+    SimulationRun,
+    SimulationVerdict,
+)
 from .types import (
     DEFAULT_API_CONNECT_OPTIONS,
     NOT_GIVEN,
     APIConnectOptions,
+    FlushSentinel,
     NotGiven,
     NotGivenOr,
 )
@@ -69,12 +90,22 @@ from .voice import (
     FunctionToolsExecutedEvent,
     MetricsCollectedEvent,
     ModelSettings,
+    RecordingOptions,
     RunContext,
+    SessionUsageUpdatedEvent,
     SpeechCreatedEvent,
     UserInputTranscribedEvent,
     UserStateChangedEvent,
+    UserTurnExceededEvent,
     avatar,
     io,
+    room_io,
+    text_transforms,
+)
+from .voice.amd import (
+    AMD,
+    AMDCategory,
+    AMDPredictionEvent,
 )
 from .voice.background_audio import AudioConfig, BackgroundAudioPlayer, BuiltinAudioClip, PlayHandle
 from .voice.room_io import RoomInputOptions, RoomIO, RoomOutputOptions
@@ -90,9 +121,15 @@ from .voice.run_result import (
     RunResult,
     mock_tools,
 )
+from .voice.turn import (
+    EndpointingOptions,
+    InterruptionOptions,
+    PreemptiveGenerationOptions,
+    TurnHandlingOptions,
+    UserTurnLimitOptions,
+)
 from .worker import (
-    SimulateJobInfo,
-    Worker,
+    AgentServer,
     WorkerOptions,
     WorkerPermissions,
     WorkerType,
@@ -113,7 +150,7 @@ def __getattr__(name: str) -> typing.Any:
 
 __all__ = [
     "__version__",
-    "Worker",
+    "AgentServer",
     "WorkerOptions",
     "WorkerType",
     "WorkerPermissions",
@@ -125,8 +162,10 @@ __all__ = [
     "AutoSubscribe",
     "FunctionTool",
     "function_tool",
+    "ProviderTool",
     "ChatContext",
     "ChatItem",
+    "room_io",
     "RoomIO",
     "RoomInputOptions",
     "RoomOutputOptions",
@@ -143,14 +182,27 @@ __all__ = [
     "UserStateChangedEvent",
     "SpeechCreatedEvent",
     "MetricsCollectedEvent",
+    "SessionUsageUpdatedEvent",
     "FunctionToolsExecutedEvent",
     "FunctionCall",
     "FunctionCallOutput",
+    "AgentConfigUpdate",
+    "AgentHandoff",
     "StopResponse",
+    "ToolContext",
     "ToolError",
     "RunContext",
     "Plugin",
+    "Scenario",
+    "ScenarioGroup",
+    "ScenarioUserdata",
+    "SimulationContext",
+    "SimulationDispatch",
+    "SimulationRun",
+    "SimulationVerdict",
     "AgentSession",
+    "RecordingOptions",
+    "text_transforms",
     "AgentEvent",
     "ModelSettings",
     "Agent",
@@ -160,6 +212,7 @@ __all__ = [
     "APIError",
     "APIStatusError",
     "APITimeoutError",
+    "create_api_error_from_http",
     "APIConnectOptions",
     "NotGiven",
     "NOT_GIVEN",
@@ -169,7 +222,8 @@ __all__ = [
     "BuiltinAudioClip",
     "AudioConfig",
     "PlayHandle",
-    "SimulateJobInfo",
+    "FlushSentinel",
+    "LanguageCode",
     "io",
     "avatar",
     "cli",
@@ -194,6 +248,15 @@ __all__ = [
     "FunctionCallEvent",
     "FunctionCallOutputEvent",
     "AgentHandoffEvent",
+    "AMD",
+    "AMDCategory",
+    "AMDPredictionEvent",
+    "TurnHandlingOptions",
+    "EndpointingOptions",
+    "InterruptionOptions",
+    "PreemptiveGenerationOptions",
+    "UserTurnLimitOptions",
+    "UserTurnExceededEvent",
 ]
 
 # Cleanup docs of unexported modules

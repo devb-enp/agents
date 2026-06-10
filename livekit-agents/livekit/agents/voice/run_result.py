@@ -6,17 +6,15 @@ import contextvars
 import functools
 import json
 import os
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Generic,
     Literal,
     TypeVar,
-    Union,
     overload,
 )
 
@@ -58,12 +56,13 @@ class FunctionCallOutputEvent:
 
 @dataclass
 class AgentHandoffEvent:
+    item: llm.AgentHandoff
     old_agent: Agent | None
     new_agent: Agent
     type: Literal["agent_handoff"] = "agent_handoff"
 
 
-RunEvent = Union[ChatMessageEvent, FunctionCallEvent, FunctionCallOutputEvent, AgentHandoffEvent]
+RunEvent = ChatMessageEvent | FunctionCallEvent | FunctionCallOutputEvent | AgentHandoffEvent
 
 
 class RunResult(Generic[Run_T]):
@@ -80,7 +79,17 @@ class RunResult(Generic[Run_T]):
 
     @property
     def events(self) -> list[RunEvent]:
-        """List of all recorded events generated during the run."""
+        """
+        List of recorded run events in chronological order.
+
+        This surface is intended for assertions in tests. Events may include
+        `ChatMessageEvent`, `FunctionCallEvent`,
+        `FunctionCallOutputEvent`, and `AgentHandoffEvent`.
+
+        Use `RunResult.events` when validating what happened in a run instead
+        of depending on lower-level session internals, room state, or raw media
+        artifacts.
+        """
         return self._recorded_items
 
     @functools.cached_property
@@ -133,21 +142,36 @@ class RunResult(Generic[Run_T]):
 
         return _await_impl().__await__()
 
-    def _agent_handoff(self, *, old_agent: Agent | None, new_agent: Agent) -> None:
-        self._recorded_items.append(AgentHandoffEvent(old_agent=old_agent, new_agent=new_agent))
+    def _agent_handoff(
+        self, *, item: llm.AgentHandoff, old_agent: Agent | None, new_agent: Agent
+    ) -> None:
+        if self._done_fut.done():
+            return
+
+        event = AgentHandoffEvent(item=item, old_agent=old_agent, new_agent=new_agent)
+        index = self._find_insertion_index(created_at=event.item.created_at)
+        self._recorded_items.insert(index, event)
 
     def _item_added(self, item: llm.ChatItem) -> None:
         if self._done_fut.done():
             return
 
+        event: RunEvent | None = None
         if item.type == "message":
-            self._recorded_items.append(ChatMessageEvent(item=item))
+            event = ChatMessageEvent(item=item)
         elif item.type == "function_call":
-            self._recorded_items.append(FunctionCallEvent(item=item))
+            event = FunctionCallEvent(item=item)
         elif item.type == "function_call_output":
-            self._recorded_items.append(FunctionCallOutputEvent(item=item))
+            event = FunctionCallOutputEvent(item=item)
+
+        if event is not None:
+            index = self._find_insertion_index(created_at=event.item.created_at)
+            self._recorded_items.insert(index, event)
 
     def _watch_handle(self, handle: SpeechHandle | asyncio.Task) -> None:
+        if self._done_fut.done():
+            return
+
         self._handles.add(handle)
 
         if isinstance(handle, SpeechHandle):
@@ -155,12 +179,16 @@ class RunResult(Generic[Run_T]):
 
         handle.add_done_callback(self._mark_done_if_needed)
 
-    def _unwatch_handle(self, handle: SpeechHandle | asyncio.Task) -> None:
+    def _unwatch_handle(self, handle: SpeechHandle | asyncio.Task) -> bool:
+        if handle not in self._handles:
+            return False
+
         self._handles.discard(handle)
         handle.remove_done_callback(self._mark_done_if_needed)
 
         if isinstance(handle, SpeechHandle):
             handle._remove_item_added_callback(self._item_added)
+        return True
 
     def _mark_done_if_needed(self, handle: SpeechHandle | asyncio.Task | None) -> None:
         if isinstance(handle, SpeechHandle):
@@ -175,13 +203,20 @@ class RunResult(Generic[Run_T]):
                 self._done_fut.set_result(None)
                 return
 
+            # propagate speech handle errors (e.g. LLM failures)
+            if self.__last_speech_handle._done_fut.done():
+                exc = self.__last_speech_handle._done_fut.exception()
+                if exc is not None:
+                    self._done_fut.set_exception(exc)
+                    return
+
             final_output = self.__last_speech_handle._maybe_run_final_output
             if not isinstance(final_output, BaseException):
                 if self._output_type and not isinstance(final_output, self._output_type):
                     self._done_fut.set_exception(
                         RuntimeError(
                             f"Expected output of type {self._output_type.__name__}, "
-                            f"got {type(self._final_output).__name__}"
+                            f"got {type(final_output).__name__}"
                         )
                     )
                 else:
@@ -189,6 +224,19 @@ class RunResult(Generic[Run_T]):
                     self._done_fut.set_result(None)
             else:
                 self._done_fut.set_exception(final_output)
+
+    def _find_insertion_index(self, *, created_at: float) -> int:
+        """
+        Returns the index to insert an item by creation time.
+
+        Iterates in reverse, assuming items are sorted by `created_at`.
+        Finds the position after the last item with `created_at <=` the given timestamp.
+        """
+        for i in reversed(range(len(self._recorded_items))):
+            if self._recorded_items[i].item.created_at <= created_at:
+                return i + 1
+
+        return 0
 
 
 class RunAssert:
@@ -1006,6 +1054,43 @@ def mock_tools(agent: type[Agent], mocks: dict[str, Callable]) -> Generator[None
         yield
     finally:
         _MockToolsContextVar.reset(token)
+
+
+async def _run_mock(mock: Callable, *fnc_args: Any, **fnc_kwargs: Any) -> Any:
+    """Invoke a mock tool, trimming args/kwargs to whatever subset of the real
+    tool's parameters the mock actually declares."""
+    import inspect
+
+    sig = inspect.signature(mock)
+
+    pos_param_names = [
+        name
+        for name, param in sig.parameters.items()
+        if param.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    max_positional = len(pos_param_names)
+    trimmed_args = fnc_args[:max_positional]
+    kw_param_names = [
+        name
+        for name, param in sig.parameters.items()
+        if param.kind
+        in (
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    trimmed_kwargs = {k: v for k, v in fnc_kwargs.items() if k in kw_param_names}
+
+    bound = sig.bind_partial(*trimmed_args, **trimmed_kwargs)
+    bound.apply_defaults()
+
+    if inspect.iscoroutinefunction(mock):
+        return await mock(*bound.args, **bound.kwargs)
+    return mock(*bound.args, **bound.kwargs)
 
 
 def _format_events(events: list[RunEvent], *, selected_index: int | None = None) -> list[str]:

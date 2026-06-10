@@ -12,7 +12,7 @@ from ..log import logger
 from ..utils import aio, log_exceptions, shortuuid
 from . import channel, proto
 from .inference_proc_lazy_main import ProcStartArgs, proc_main
-from .supervised_proc import SupervisedProc
+from .supervised_proc import SupervisedProc, SupervisedProcKind
 
 
 class InferenceProcExecutor(SupervisedProc):
@@ -47,6 +47,10 @@ class InferenceProcExecutor(SupervisedProc):
         self._runners = runners
         self._active_requests: dict[str, asyncio.Future[proto.InferenceResponse]] = {}
 
+    @property
+    def process_kind(self) -> SupervisedProcKind:
+        return SupervisedProcKind.INFERENCE
+
     def _create_process(self, cch: socket.socket, log_cch: socket.socket) -> mp.Process:
         proc_args = ProcStartArgs(
             log_cch=log_cch,
@@ -57,7 +61,7 @@ class InferenceProcExecutor(SupervisedProc):
         return self._mp_ctx.Process(  # type: ignore
             target=proc_main,
             args=(proc_args,),
-            name="inference_proc",
+            name="agents_inference_process",
         )
 
     @log_exceptions(logger=logger)
@@ -70,7 +74,7 @@ class InferenceProcExecutor(SupervisedProc):
                         "received unexpected inference response",
                         extra={"request_id": msg.request_id},
                     )
-                    return
+                    continue
 
                 with contextlib.suppress(asyncio.InvalidStateError):
                     fut.set_result(msg)
@@ -81,13 +85,18 @@ class InferenceProcExecutor(SupervisedProc):
 
         request_id = shortuuid("inference_req_")
         fut = asyncio.Future[proto.InferenceResponse]()
-
-        await channel.asend_message(
-            self._pch,
-            proto.InferenceRequest(request_id=request_id, method=method, data=data),
-        )
-
         self._active_requests[request_id] = fut
+
+        try:
+            await channel.asend_message(
+                self._pch,
+                proto.InferenceRequest(request_id=request_id, method=method, data=data),
+            )
+        except Exception:
+            if not fut.done():
+                fut.cancel()
+            self._active_requests.pop(request_id, None)
+            raise
 
         inf_resp = await fut
         if inf_resp.error:

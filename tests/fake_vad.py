@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from livekit import rtc
 from livekit.agents.vad import VAD, VADCapabilities, VADEvent, VADEventType, VADStream
 
 from .fake_stt import FakeUserSpeech
@@ -20,7 +21,7 @@ class FakeVAD(VAD):
 
         if fake_user_speeches is not None:
             fake_user_speeches = sorted(fake_user_speeches, key=lambda x: x.start_time)
-            for prev, next in zip(fake_user_speeches[:-1], fake_user_speeches[1:]):
+            for prev, next in zip(fake_user_speeches[:-1], fake_user_speeches[1:], strict=False):
                 if prev.end_time > next.start_time:
                     raise ValueError("fake user speeches overlap")
         self._fake_user_speeches = fake_user_speeches
@@ -41,7 +42,12 @@ class FakeVADStream(VADStream):
         if not self._vad._fake_user_speeches:
             return
 
-        await self._input_ch.recv()
+        async for input_frame in self._input_ch:
+            if isinstance(input_frame, rtc.AudioFrame):
+                break
+        else:
+            return
+
         start_time = time.perf_counter()
 
         def current_time() -> float:
@@ -71,6 +77,12 @@ class FakeVADStream(VADStream):
     def _send_vad_event(
         self, type: VADEventType, fake_speech: FakeUserSpeech, curr_time: float
     ) -> None:
+        if curr_time <= fake_speech.end_time:
+            raw_accumulated_speech = curr_time - fake_speech.start_time
+            raw_accumulated_silence = 0.0
+        else:
+            raw_accumulated_speech = 0.0
+            raw_accumulated_silence = curr_time - fake_speech.end_time
         self._event_ch.send_nowait(
             VADEvent(
                 type=type,
@@ -78,5 +90,7 @@ class FakeVADStream(VADStream):
                 timestamp=curr_time,
                 speech_duration=min(curr_time, fake_speech.end_time) - fake_speech.start_time,
                 silence_duration=max(0.0, curr_time - fake_speech.end_time),
+                raw_accumulated_speech=raw_accumulated_speech,
+                raw_accumulated_silence=raw_accumulated_silence,
             )
         )

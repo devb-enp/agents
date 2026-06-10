@@ -1,7 +1,6 @@
 from . import io, run_result
 from .agent import Agent, AgentTask, ModelSettings
-from .agent_session import AgentSession, VoiceActivityVideoSampler
-from .chat_cli import ChatCLI
+from .agent_session import AgentSession, RecordingOptions, VoiceActivityVideoSampler
 from .events import (
     AgentEvent,
     AgentFalseInterruptionEvent,
@@ -13,21 +12,24 @@ from .events import (
     FunctionToolsExecutedEvent,
     MetricsCollectedEvent,
     RunContext,
+    SessionUsageUpdatedEvent,
     SpeechCreatedEvent,
     UserInputTranscribedEvent,
     UserStateChangedEvent,
+    UserTurnExceededEvent,
 )
+from .remote_session import RemoteSession
 from .room_io import (
     _ParticipantAudioOutput,
     _ParticipantStreamTranscriptionOutput,
     _ParticipantTranscriptionOutput,
 )
 from .speech_handle import SpeechHandle
-from .transcription import TranscriptSynchronizer
+from .transcription import TranscriptSynchronizer, text_transforms
 
 __all__ = [
-    "ChatCLI",
     "AgentSession",
+    "RecordingOptions",
     "VoiceActivityVideoSampler",
     "Agent",
     "ModelSettings",
@@ -37,6 +39,7 @@ __all__ = [
     "UserInputTranscribedEvent",
     "AgentEvent",
     "MetricsCollectedEvent",
+    "SessionUsageUpdatedEvent",
     "ConversationItemAddedEvent",
     "SpeechCreatedEvent",
     "ErrorEvent",
@@ -46,6 +49,8 @@ __all__ = [
     "AgentStateChangedEvent",
     "FunctionToolsExecutedEvent",
     "AgentFalseInterruptionEvent",
+    "RemoteSession",
+    "UserTurnExceededEvent",
     "TranscriptSynchronizer",
     "io",
     "room_io",
@@ -53,6 +58,7 @@ __all__ = [
     "_ParticipantAudioOutput",
     "_ParticipantTranscriptionOutput",
     "_ParticipantStreamTranscriptionOutput",
+    "text_transforms",
 ]
 
 # Cleanup docs of unexported modules

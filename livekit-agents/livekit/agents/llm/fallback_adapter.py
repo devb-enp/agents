@@ -5,14 +5,14 @@ import dataclasses
 import time
 from collections.abc import AsyncIterable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from .._exceptions import APIConnectionError, APIError
 from ..log import logger
 from ..types import DEFAULT_API_CONNECT_OPTIONS, NOT_GIVEN, APIConnectOptions, NotGivenOr
 from .chat_context import ChatContext
 from .llm import LLM, ChatChunk, LLMStream
-from .tool_context import FunctionTool, RawFunctionTool, ToolChoice
+from .tool_context import Tool, ToolChoice
 
 DEFAULT_FALLBACK_API_CONNECT_OPTIONS = APIConnectOptions(
     max_retry=0, timeout=DEFAULT_API_CONNECT_OPTIONS.timeout
@@ -34,6 +34,10 @@ class AvailabilityChangedEvent:
 class FallbackAdapter(
     LLM[Literal["llm_availability_changed"]],
 ):
+    """Agent Fallback Adapter for LLM. Manages multiple STT instances with automatic fallback
+    when the primary provider fails.
+    """
+
     def __init__(
         self,
         llm: list[LLM],
@@ -88,7 +92,7 @@ class FallbackAdapter(
         self,
         *,
         chat_ctx: ChatContext,
-        tools: list[FunctionTool | RawFunctionTool] | None = None,
+        tools: list[Tool] | None = None,
         conn_options: APIConnectOptions = DEFAULT_FALLBACK_API_CONNECT_OPTIONS,
         parallel_tool_calls: NotGivenOr[bool] = NOT_GIVEN,
         tool_choice: NotGivenOr[ToolChoice] = NOT_GIVEN,
@@ -113,12 +117,14 @@ class FallbackAdapter(
 
 
 class FallbackLLMStream(LLMStream):
+    _llm_request_span_name: ClassVar[str] = "llm_fallback_adapter"
+
     def __init__(
         self,
         llm: FallbackAdapter,
         *,
         chat_ctx: ChatContext,
-        tools: list[FunctionTool | RawFunctionTool],
+        tools: list[Tool],
         conn_options: APIConnectOptions,
         parallel_tool_calls: NotGivenOr[bool] = NOT_GIVEN,
         tool_choice: NotGivenOr[ToolChoice] = NOT_GIVEN,
@@ -139,7 +145,7 @@ class FallbackLLMStream(LLMStream):
         return self._current_stream.chat_ctx
 
     @property
-    def tools(self) -> list[FunctionTool | RawFunctionTool]:
+    def tools(self) -> list[Tool]:
         if self._current_stream is None:
             return self._tools
         return self._current_stream.tools
@@ -190,14 +196,16 @@ class FallbackLLMStream(LLMStream):
         except APIError as e:
             if check_recovery:
                 logger.warning(
-                    f"{llm.label} recovery failed",
-                    exc_info=e,
+                    "%s recovery failed: %s",
+                    llm.label,
+                    e,
                 )
                 raise
 
             logger.warning(
-                f"{llm.label} failed, switching to next LLM",
-                exc_info=e,
+                "%s failed, switching to next LLM: %s",
+                llm.label,
+                e,
             )
             raise
         except Exception:
@@ -257,7 +265,7 @@ class FallbackLLMStream(LLMStream):
                         self._event_ch.send_nowait(result)
 
                     return
-                except Exception:  # exceptions already logged inside _try_synthesize
+                except Exception:  # exceptions already logged inside _try_generate
                     if llm_status.available:
                         llm_status.available = False
                         self._fallback_adapter.emit(
